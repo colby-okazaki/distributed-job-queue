@@ -1,0 +1,67 @@
+services:
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["6379:6379"]
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: jobs
+      POSTGRES_PASSWORD: jobs
+      POSTGRES_DB: jobs
+    ports: ["5432:5432"]
+    volumes: [pg-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobs -d jobs"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  api:
+    build: .
+    command: ["node", "dist/api-main.js"]
+    environment: &app-env
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgres://jobs:jobs@postgres:5432/jobs
+      PORT: "3000"
+      SERVICE_NAME: api
+    ports: ["3000:3000"]
+    depends_on:
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+
+  worker:
+    build: .
+    command: ["node", "dist/worker-main.js"]
+    environment:
+      <<: *app-env
+      SERVICE_NAME: worker
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+      CHAOS_CRASH_RATE: ${CHAOS_CRASH_RATE:-0}
+      LOCK_TTL_MS: ${LOCK_TTL_MS:-15000}
+      CLAIM_IDLE_MS: ${CLAIM_IDLE_MS:-30000}
+    restart: unless-stopped # chaos mode crashes workers on purpose; compose brings them back
+    stop_grace_period: 35s
+    depends_on:
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+
+  sink:
+    build: .
+    command: ["node", "dist/sink.js"]
+    environment:
+      PORT: "4000"
+      FAIL_RATE: ${SINK_FAIL_RATE:-0.3}
+      SERVICE_NAME: sink
+    ports: ["4000:4000"]
+
+volumes:
+  redis-data:
+  pg-data:

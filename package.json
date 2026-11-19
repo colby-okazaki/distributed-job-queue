@@ -1,0 +1,33 @@
+{
+  "name": "distributed-job-queue",
+  "version": "1.0.0",
+  "description": "Redis Streams job queue with retries, exponential backoff, DLQ and idempotent workers",
+  "scripts": {
+    "build": "tsc -p .",
+    "typecheck": "tsc -p . --noEmit",
+    "dev:api": "tsx watch src/api-main.ts",
+    "dev:worker": "tsx watch src/worker-main.ts",
+    "dev:sink": "tsx src/sink.ts",
+    "start": "node dist/api-main.js",
+    "test": "vitest run",
+    "bench": "tsx scripts/bench.ts"
+  },
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "express": "^5.3.0",
+    "ioredis": "^6.0.0",
+    "pg": "^8.23.1",
+    "pino": "^10.4.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.6",
+    "@types/pg": "^8.23.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.1"
+  }
+}
