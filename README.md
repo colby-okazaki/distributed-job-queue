@@ -50,7 +50,7 @@ curl -s -XPOST localhost:3000/dlq/<id>/replay
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/jobs` | Enqueue `{ type, payload, maxAttempts?, delayMs? }`. Optional `Idempotency-Key` header. Returns `202` with the job ID. |
+| `POST` | `/jobs` | Enqueue `{ type, payload, maxAttempts?, delayMs? }`. Optional `Idempotency-Key` and `X-Client-Id` headers. Returns `202` with the job ID, or `429` with `Retry-After` when the client is over its rate limit. |
 | `GET` | `/jobs/:id` | Job row plus every state transition (which worker, which attempt, what error). |
 | `GET` | `/jobs?status=&type=&limit=` | Query job history. |
 | `GET` | `/stats` | Ready / in-flight / delayed / dead-lettered counts and processing counters. |
@@ -138,6 +138,18 @@ An earlier version used a fixed 60-second lease with no heartbeat. The chaos ben
 
 On `SIGTERM` a worker stops reading new messages, finishes in-flight jobs, and then exits (graceful shutdown).
 
+### Rate limiting
+
+`POST /jobs` is limited per client, so one runaway producer can't flood the queue and starve everyone else. Reads (`GET /jobs`, `/stats`) aren't limited.
+
+- **Algorithm: token bucket.** Each client has a bucket of `RATE_LIMIT_BURST` tokens (default 200) that refills at `RATE_LIMIT_PER_SEC` (default 100). Each request spends one token. This allows short bursts while holding the long-run average to the rate. A fixed window ("100 per minute") lets a client send 200 requests in two seconds by straddling the window boundary. A sliding log is exact but stores every timestamp. The bucket stores two numbers per client.
+- **Shared across API instances.** The bucket lives in Redis and is updated by one Lua script, so read, refill, spend and write happen atomically. Two API replicas behind a load balancer enforce one combined limit, not one each. A test checks that with two connections racing.
+- **One clock.** Refill uses Redis `TIME`, for the same reason retries do: instances with drifting clocks would otherwise mint extra tokens.
+- **Bounded memory.** A bucket that's been idle long enough to refill completely is identical to a missing key, so it's given a TTL and Redis drops it.
+- **Client feedback.** Responses carry `RateLimit-Limit`, `RateLimit-Remaining` and `RateLimit-Reset`. A rejection is a `429` with `Retry-After`, so well-behaved clients (like `scripts/bench.ts`) back off for exactly as long as needed.
+- **Fails open.** If Redis can't be reached, the limiter allows the request and logs. The enqueue fails anyway in that case, with a clearer error.
+- **Client identity.** The `X-Client-Id` header, falling back to source IP. In production this would come from an authenticated API key, because a client choosing its own ID could rotate it to dodge the limit.
+
 ### Persistence
 
 Redis holds the queue. Postgres holds the system of record: `jobs` (current state, attempts, result, last error, timings) and `job_events` (append-only history). Migrations run on boot behind a Postgres advisory lock, so the API and N workers starting together don't race.
@@ -169,6 +181,15 @@ Local run on a laptop (Docker Desktop, 3 workers × 4 consumers, `sleep` jobs of
 | Succeeded / dead-lettered | 2,000 / 0 |
 | Throughput | 192 jobs/s, 10.4 s wall time |
 
+**Rate-limit fairness:** one noisy client sends `POST /jobs` as fast as it can (25 parallel loops) for 10 seconds. At the same time, four normal clients each send a steady 20 requests/s. The limit is 100/s per client with a burst of 200.
+
+| Client | Sent | Accepted | Rejected (429) | Accepted/s | p95 latency (accepted) |
+|---|---|---|---|---|---|
+| Noisy | 116,478 | 1,194 | 115,284 (99.0%) | **119.4** | 33.5 ms |
+| Normal ×4 (each) | 200 | **200** | 0 | 20 | ~14.5 ms |
+
+The noisy client's accepted count matches the bucket math exactly: 200 burst + 100/s × 10 s = 1,200 over 10 s. The API rejected about 11,500 requests/s from it while the normal clients got every request through.
+
 Throughput is measured with the benchmark's monotonic clock. Latency percentiles come from Postgres timestamps. With 2,000 jobs enqueued at once, queue-to-done latency mostly reflects time spent waiting in the backlog.
 
 Reproduce:
@@ -180,7 +201,12 @@ npm run bench -- --jobs 2000 --ms 20 --fail-rate 0.2
 # Chaos: each job has a 0.5% chance of killing its worker after completion but before ACK
 CHAOS_CRASH_RATE=0.005 LOCK_TTL_MS=2000 CLAIM_IDLE_MS=3000 docker compose up -d --scale worker=3 worker
 npm run bench -- --jobs 2000 --ms 20 --fail-rate 0
+
+# Rate-limit fairness: one noisy client vs. four normal ones
+npm run bench:ratelimit -- --seconds 10
 ```
+
+The throughput benchmarks above were taken with rate limiting off (`RATE_LIMIT_PER_SEC=0 docker compose up -d api`). With it on, `bench.ts` backs off on `429` and reports how many requests were throttled.
 
 ## Tests
 
@@ -204,6 +230,9 @@ Integration tests run against real Redis and Postgres (each test uses its own ke
 - orphaned messages from a dead consumer get reclaimed and processed
 - poison-pill detection via delivery count
 - **3 workers × 3 consumers on 150 jobs: every job runs exactly once**
+- rate limiting: burst then `429` with `Retry-After`, refill over time, per-client isolation, reads not limited
+- **two API instances racing on one client share a single limit**
+- a client hammering the limiter is held to the sustained rate, and idle buckets expire
 
 CI runs typecheck, tests (with Redis and Postgres service containers), and a Docker build on every push.
 
@@ -221,6 +250,8 @@ CI runs typecheck, tests (with Redis and Postgres service containers), and a Doc
 | `CLAIM_IDLE_MS` | `30000` | No heartbeat for this long means orphaned. Must exceed `LOCK_TTL_MS` |
 | `MAX_DELIVERIES` | `10` | Poison-pill threshold |
 | `DONE_TTL_SEC` | `86400` | Redis idempotency marker lifetime |
+| `RATE_LIMIT_PER_SEC` | `100` | Sustained `POST /jobs` rate per client. `0` disables the limit |
+| `RATE_LIMIT_BURST` | `200` | Burst size (token bucket capacity) |
 | `CHAOS_CRASH_RATE` | `0` | Demo only: crash after done, before ACK |
 
 ## Project layout
@@ -232,6 +263,7 @@ src/
   queue.ts        Redis Streams / ZSET / Lua operations
   db.ts           Postgres schema, state transitions, history
   backoff.ts      exponential backoff with jitter
+  rateLimit.ts    Redis token-bucket rate limiter + Express middleware
   jobs/handlers.ts  job type definitions
   sink.ts         flaky webhook receiver for demos
 scripts/bench.ts  load test + metrics

@@ -6,6 +6,7 @@ import type { JobRepo } from './db.js';
 import type { JobDefinition } from './jobs/handlers.js';
 import { logger } from './logger.js';
 import type { Queue } from './queue.js';
+import { RateLimiter, rateLimitMiddleware } from './rateLimit.js';
 import type { JobEnvelope } from './types.js';
 
 export interface ApiDeps {
@@ -34,7 +35,14 @@ export function createApp({ config, queue, repo, registry }: ApiDeps) {
     res.json({ ok: true });
   });
 
-  app.post('/jobs', async (req, res) => {
+  const limitJobs =
+    config.rateLimitPerSec > 0
+      ? rateLimitMiddleware(new RateLimiter(queue.redis, config.keyPrefix, config.rateLimitPerSec, config.rateLimitBurst), () =>
+          queue.incr('rate_limited'),
+        )
+      : (_req: Request, _res: Response, next: NextFunction) => next();
+
+  app.post('/jobs', limitJobs, async (req, res) => {
     const body = EnqueueBody.safeParse(req.body);
     if (!body.success) return res.status(400).json({ error: 'invalid body', issues: body.error.issues });
     const { type, delayMs } = body.data;

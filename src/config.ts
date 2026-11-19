@@ -32,6 +32,11 @@ export interface Config {
   /** How long the "already processed" marker lives in Redis. Postgres is the durable fallback. */
   doneTtlSec: number;
 
+  /** Sustained POST /jobs rate per client (tokens/sec). 0 disables rate limiting. */
+  rateLimitPerSec: number;
+  /** Requests a client can make in a burst before the sustained rate applies. */
+  rateLimitBurst: number;
+
   /** Probability that a worker crashes after marking a job done but before ACKing it (demo only). */
   chaosCrashRate: number;
 }
@@ -66,6 +71,9 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     promoteIntervalMs: num('PROMOTE_INTERVAL_MS', 250),
     maxDeliveries: num('MAX_DELIVERIES', 10),
     doneTtlSec: num('DONE_TTL_SEC', 86_400),
+
+    rateLimitPerSec: num('RATE_LIMIT_PER_SEC', 100),
+    rateLimitBurst: num('RATE_LIMIT_BURST', 200),
 
     chaosCrashRate: num('CHAOS_CRASH_RATE', 0),
     ...overrides,

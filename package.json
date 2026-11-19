@@ -10,7 +10,8 @@
     "dev:sink": "tsx src/sink.ts",
     "start": "node dist/api-main.js",
     "test": "vitest run",
-    "bench": "tsx scripts/bench.ts"
+    "bench": "tsx scripts/bench.ts",
+    "bench:ratelimit": "tsx scripts/ratelimit-bench.ts"
   },
   "author": "",
   "license": "MIT",
