@@ -240,7 +240,9 @@ test/             integration tests
 
 ## Roadmap
 
-- Per-client rate limiting on `POST /jobs` (token bucket in Redis)
-- Prometheus metrics (queue depth, success/failure rate, latency histograms) and a Grafana dashboard
-- Transactional outbox to close the enqueue dual-write gap
-- Deploy to AWS (ECS for API and workers, ElastiCache, RDS)
+Tracked in [milestones](https://github.com/colby-okazaki/distributed-job-queue/milestones):
+
+- **Week 1:** per-client rate limiting on `POST /jobs` with a Redis token bucket ([#1](https://github.com/colby-okazaki/distributed-job-queue/issues/1))
+- **Week 2:** Prometheus metrics ([#2](https://github.com/colby-okazaki/distributed-job-queue/issues/2)) and a Grafana dashboard ([#3](https://github.com/colby-okazaki/distributed-job-queue/issues/3))
+- **Week 3:** transactional outbox to close the enqueue dual-write gap ([#4](https://github.com/colby-okazaki/distributed-job-queue/issues/4)), job cancellation ([#5](https://github.com/colby-okazaki/distributed-job-queue/issues/5))
+- **Week 4:** AWS deploy on ECS, ElastiCache and RDS ([#6](https://github.com/colby-okazaki/distributed-job-queue/issues/6)), refreshed benchmarks ([#7](https://github.com/colby-okazaki/distributed-job-queue/issues/7))
