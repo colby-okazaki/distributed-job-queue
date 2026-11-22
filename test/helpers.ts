@@ -23,6 +23,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     claimIdleMs: 100,
     claimIntervalMs: 60_000, // tests trigger reclaim explicitly
     promoteIntervalMs: 20,
+    rateLimitPerSec: 0, // off by default; rate-limit tests turn it on
     ...overrides,
   });
 }

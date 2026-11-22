@@ -39,24 +39,38 @@ const before = await counters();
 const ids: string[] = [];
 const t0 = performance.now(); // monotonic: immune to wall-clock jumps
 
-// Enqueue with bounded client concurrency.
+// Enqueue with bounded client concurrency. On 429 the client waits as told
+// by Retry-After and tries again, like a well-behaved producer should.
 let next = 0;
+let throttled = 0;
 await Promise.all(
   Array.from({ length: Number(values.concurrency) }, async () => {
     while (next < N) {
       next++;
-      const res = await fetch(`${api}/jobs`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ type: 'sleep', payload: { ms: Number(values.ms), failRate: Number(values['fail-rate']) } }),
-      });
-      if (res.status !== 202) throw new Error(`enqueue failed: ${res.status} ${await res.text()}`);
-      ids.push(((await res.json()) as any).id);
+      for (;;) {
+        const res = await fetch(`${api}/jobs`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-client-id': 'bench' },
+          body: JSON.stringify({ type: 'sleep', payload: { ms: Number(values.ms), failRate: Number(values['fail-rate']) } }),
+        });
+        if (res.status === 429) {
+          throttled++;
+          const { retryAfterMs } = (await res.json()) as { retryAfterMs: number };
+          await new Promise((r) => setTimeout(r, retryAfterMs));
+          continue;
+        }
+        if (res.status !== 202) throw new Error(`enqueue failed: ${res.status} ${await res.text()}`);
+        ids.push(((await res.json()) as any).id);
+        break;
+      }
     }
   }),
 );
 const enqueueSec = (performance.now() - t0) / 1000;
-console.log(`enqueued ${N} jobs in ${enqueueSec.toFixed(2)}s (${(N / enqueueSec).toFixed(0)} jobs/s accepted)`);
+console.log(
+  `enqueued ${N} jobs in ${enqueueSec.toFixed(2)}s (${(N / enqueueSec).toFixed(0)} jobs/s accepted, ${throttled} requests throttled)`,
+);
+if (throttled) console.log('  note: rate limiting slowed enqueueing; set RATE_LIMIT_PER_SEC=0 on the API to measure raw worker throughput');
 
 for (;;) {
   const { rows } = await pool.query<{ n: string }>(
